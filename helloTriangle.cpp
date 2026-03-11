@@ -2,10 +2,15 @@
 #include <GL/glew.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
-
-
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <iostream>
 
+struct Vec3 {
+    float x, y, z;
+};
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow *window);
@@ -33,6 +38,82 @@ const char *fragmentShaderSource = "#version 330 core\n"
     "   FragColor = vec4(vertexColor.x, vertexColor.y, vertexColor.z, 1.0f);\n"
     "}\n\0";
 
+bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
+{
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open OBJ file: " << filename << std::endl;
+        return false;
+    }
+
+    std::vector<Vec3> positions;
+    std::string line;
+
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#')
+            continue;
+
+        std::istringstream iss(line);
+        std::string prefix;
+        iss >> prefix;
+
+        if (prefix == "v") {
+            Vec3 pos;
+            iss >> pos.x >> pos.y >> pos.z;
+            positions.push_back(pos);
+        }
+        else if (prefix == "f") {
+            std::vector<int> faceIndices;
+            std::string token;
+
+            while (iss >> token) {
+                std::stringstream tokenStream(token);
+                std::string indexStr;
+                std::getline(tokenStream, indexStr, '/'); // only read up to first / 
+
+                if (indexStr.empty()) {
+                    std::cerr << "Bad face token in OBJ: " << token << std::endl;
+                    return false;
+                }
+
+                int objIndex = std::stoi(indexStr);
+                faceIndices.push_back(objIndex - 1); // faces use 1 based indexing
+            }
+
+            if (faceIndices.size() < 3) {
+                std::cerr << "Face has fewer than 3 vertices." << std::endl;
+                return false;
+            }
+
+            // triangulate each polygon as a fan:
+            // (0,1,2), (0,2,3), (0,3,4), ...
+            for (size_t i = 1; i + 1 < faceIndices.size(); i++) {
+                int tri[3] = {
+                    faceIndices[0],
+                    faceIndices[i],
+                    faceIndices[i + 1]
+                };
+                
+                for (int k = 0; k < 3; k++) {
+                    int idx = tri[k];
+                    Vec3 p = positions[idx];
+
+                    // position
+                    vertices.push_back(p.x);
+                    vertices.push_back(p.y);
+                    vertices.push_back(p.z);
+
+                    // default color
+                    vertices.push_back(1.0f);
+                    vertices.push_back(1.0f);
+                    vertices.push_back(1.0f);
+                }
+            }
+        }
+    }
+
+    return true;
+}
 
 int main()
 {
@@ -111,17 +192,14 @@ int main()
 
     // set up vertex data (and buffer(s)) and configure vertex attributes
     // ------------------------------------------------------------------
-    float vertices[] = {
-        // positions            //colors
-        -0.5f, -0.25f, 0.0f,    1.0f, 0.0f, 0.0f,   // left
-        0.5f, -0.75f, 0.0f,     0.0f, 1.0f, 0.0f,   // right
-        0.0f,  0.5f,  0.0f,     0.0f, 0.0f, 1.0f,   // top
-   
-        -0.5f, -0.5f,  0.0f,    1.0f, 1.0f, 0.0f,   // left
-        0.5f, -0.5f,  0.0f,     0.0f, 1.0f, 1.0f,   // right
-        0.0f, -1.0f,  0.0f,     1.0f, 0.0f, 1.0f    // bottom
-    };
-    unsigned int numVertices = sizeof(vertices)/6;
+    std::vector<float> vertices;
+
+    if (!loadOBJ("cube.obj", vertices)) {
+        std::cerr << "Could not load OBJ geometry." << std::endl;
+        glfwTerminate();
+        return -1;
+    }
+    unsigned int numVertices = vertices.size() / 6;
 
 
     unsigned int VBO, VAO;
@@ -132,7 +210,7 @@ int main()
 
 
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
 
 
     // position attributes
