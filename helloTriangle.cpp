@@ -25,7 +25,7 @@ const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
 
 // interaction state
-glm::vec3 gTranslation(0.0f, 0.0f, -1.5f);
+glm::vec3 gTranslation(0.0f, 0.0f, 0.0f);
 glm::vec3 gRotation(0.0f, 0.0f, 0.0f); // in radians
 glm::vec3 gScale(1.0f, 1.0f, 1.0f);
 
@@ -49,6 +49,48 @@ const char *fragmentShaderSource = "#version 330 core\n"
     "{\n"
     "   FragColor = vec4(vertexColor.x, vertexColor.y, vertexColor.z, 1.0f);\n"
     "}\n\0";
+
+void centerAndNormalizeMesh(std::vector<float>& vertices)
+{
+    if (vertices.empty()) return;
+
+    float minX = vertices[0], maxX = vertices[0];
+    float minY = vertices[1], maxY = vertices[1];
+    float minZ = vertices[2], maxZ = vertices[2];
+
+    // find bounding box
+    for (size_t i = 0; i < vertices.size(); i += 6) {
+        float x = vertices[i];
+        float y = vertices[i + 1];
+        float z = vertices[i + 2];
+
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+        minZ = std::min(minZ, z);
+        maxZ = std::max(maxZ, z);
+    }
+
+    float centerX = (minX + maxX) * 0.5f;
+    float centerY = (minY + maxY) * 0.5f;
+    float centerZ = (minZ + maxZ) * 0.5f;
+
+    float sizeX = maxX - minX;
+    float sizeY = maxY - minY;
+    float sizeZ = maxZ - minZ;
+
+    float maxDim = std::max(sizeX, std::max(sizeY, sizeZ));
+
+    // scale largest dimension to len 1.0
+    float scale = 1.0f / maxDim;
+
+    for (size_t i = 0; i < vertices.size(); i += 6) {
+        vertices[i] = (vertices[i] - centerX) * scale;
+        vertices[i + 1] = (vertices[i + 1] - centerY) * scale;
+        vertices[i + 2] = (vertices[i + 2] - centerZ) * scale;
+    }
+}
 
 bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
 {
@@ -223,11 +265,12 @@ int main()
     // ------------------------------------------------------------------
     std::vector<float> originalVertices;
 
-    if (!loadOBJ("cow.obj", originalVertices)) {
+    if (!loadOBJ("skull.obj", originalVertices)) {
         std::cerr << "Could not load OBJ geometry." << std::endl;
         glfwTerminate();
         return -1;
     }
+    centerAndNormalizeMesh(originalVertices);
     std::vector<float> transformedVertices = originalVertices;
     unsigned int numVertices = originalVertices.size() / 6;
 
@@ -270,8 +313,11 @@ int main()
     double cpuUploadMsAccum = 0.0;
     int cpuUploadFrameCount = 0;
 
+    double lastFPSTime = glfwGetTime();
+    int frameCount = 0;
+
     // uncomment this call to draw in wireframe polygons.
-    // glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
 
     // render loop
@@ -335,6 +381,25 @@ int main()
         // -------------------------------------------------------------------------------
         glfwSwapBuffers(window);
         glfwPollEvents();
+
+        frameCount++;
+
+        // fps logging
+        double currentTime = glfwGetTime();
+        double elapsed = currentTime - lastFPSTime;
+
+        if (elapsed >= 1.0) {
+            double fps = frameCount / elapsed;
+
+            if (gUseCPUTransform) {
+                std::cout << "CPU mode FPS: " << fps << std::endl;
+            } else {
+                std::cout << "GPU mode FPS: " << fps << std::endl;
+            }
+
+            frameCount = 0;
+            lastFPSTime = currentTime;
+        }
     }
 
     // performance logs
@@ -364,7 +429,7 @@ void processInput(GLFWwindow *window)
 {
     const float moveStep = 0.01f;
     const float rotStep  = 0.02f;
-    const float scaleStep = 0.01f;
+    const float scaleStep = 0.001f;
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
@@ -374,14 +439,16 @@ void processInput(GLFWwindow *window)
     if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) gTranslation.x += moveStep;
     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)    gTranslation.y += moveStep;
     if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)  gTranslation.y -= moveStep;
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)     gTranslation.z += moveStep;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)     gTranslation.z -= moveStep;
+    if (glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS)     gTranslation.z += moveStep;
+    if (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS)     gTranslation.z -= moveStep;
 
     // rotation
     if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) gRotation.y += rotStep;
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) gRotation.y -= rotStep;
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) gRotation.x += rotStep;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) gRotation.x -= rotStep;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) gRotation.x += rotStep;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) gRotation.x -= rotStep;
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) gRotation.z += rotStep;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) gRotation.z -= rotStep;
 
     // scaling
     if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) {
