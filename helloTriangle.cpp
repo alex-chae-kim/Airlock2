@@ -192,17 +192,14 @@ int main()
 
     // set up vertex data (and buffer(s)) and configure vertex attributes
     // ------------------------------------------------------------------
-    float vertices[] = {
-        // positions            //colors
-        -0.5f, -0.25f, 0.0f,    1.0f, 0.0f, 0.0f,   // left
-        0.5f, -0.75f, 0.0f,     0.0f, 1.0f, 0.0f,   // right
-        0.0f,  0.5f,  0.0f,     0.0f, 0.0f, 1.0f,   // top
-   
-        -0.5f, -0.5f,  0.0f,    1.0f, 1.0f, 0.0f,   // left
-        0.5f, -0.5f,  0.0f,     0.0f, 1.0f, 1.0f,   // right
-        0.0f, -1.0f,  0.0f,     1.0f, 0.0f, 1.0f    // bottom
-    };
-    unsigned int numVertices = sizeof(vertices)/6;
+    std::vector<float> vertices;
+
+    if (!loadOBJ("cube.obj", vertices)) {
+        std::cerr << "Could not load OBJ geometry." << std::endl;
+        glfwTerminate();
+        return -1;
+    }
+    unsigned int numVertices = vertices.size() / 6;
 
 
     unsigned int VBO, VAO;
@@ -213,7 +210,7 @@ int main()
 
 
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
 
 
     // position attributes
