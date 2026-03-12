@@ -2,11 +2,15 @@
 #include <GL/glew.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <vector>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <iostream>
+#include <chrono>
 
 struct Vec3 {
     float x, y, z;
@@ -20,14 +24,23 @@ void processInput(GLFWwindow *window);
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
 
+// interaction state
+glm::vec3 gTranslation(0.0f, 0.0f, 0.0f);
+glm::vec3 gRotation(0.0f, 0.0f, 0.0f); // in radians
+glm::vec3 gScale(1.0f, 1.0f, 1.0f);
 
+bool gUseCPUTransform = false;
+bool gSpacePressedLastFrame = false;
+
+/*
 const char *vertexShaderSource = "#version 330 core\n"
     "layout (location = 0) in vec3 aPos;\n"
     "layout (location = 1) in vec3 aColor;\n"
+    "uniform mat4 uModelView;\n"
     "out vec3 vertexColor;\n"
     "void main()\n"
     "{\n"
-    "   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
+    "   gl_Position = uModelView * vec4(aPos, 1.0);\n"
     "   vertexColor = aColor;"
     "}\0";
 const char *fragmentShaderSource = "#version 330 core\n"
@@ -37,6 +50,64 @@ const char *fragmentShaderSource = "#version 330 core\n"
     "{\n"
     "   FragColor = vec4(vertexColor.x, vertexColor.y, vertexColor.z, 1.0f);\n"
     "}\n\0";
+*/
+
+std::string readShaderFile(const std::string& filename) {
+    std::ifstream shader(filename);
+    if (!shader.is_open()) {
+        std::cout << "Failed to open shader." << std::endl;
+    }
+    std::string line;
+    std::string s;
+    while (getline(shader, line)) {
+        s.append(line);
+        s.append("\n");
+    }
+    shader.close();
+    return s;
+}
+
+void centerAndNormalizeMesh(std::vector<float>& vertices)
+{
+    if (vertices.empty()) return;
+
+    float minX = vertices[0], maxX = vertices[0];
+    float minY = vertices[1], maxY = vertices[1];
+    float minZ = vertices[2], maxZ = vertices[2];
+
+    // find bounding box
+    for (size_t i = 0; i < vertices.size(); i += 6) {
+        float x = vertices[i];
+        float y = vertices[i + 1];
+        float z = vertices[i + 2];
+
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+        minZ = std::min(minZ, z);
+        maxZ = std::max(maxZ, z);
+    }
+
+    float centerX = (minX + maxX) * 0.5f;
+    float centerY = (minY + maxY) * 0.5f;
+    float centerZ = (minZ + maxZ) * 0.5f;
+
+    float sizeX = maxX - minX;
+    float sizeY = maxY - minY;
+    float sizeZ = maxZ - minZ;
+
+    float maxDim = std::max(sizeX, std::max(sizeY, sizeZ));
+
+    // scale largest dimension to len 1.0
+    float scale = 1.0f / maxDim;
+
+    for (size_t i = 0; i < vertices.size(); i += 6) {
+        vertices[i] = (vertices[i] - centerX) * scale;
+        vertices[i + 1] = (vertices[i + 1] - centerY) * scale;
+        vertices[i + 2] = (vertices[i + 2] - centerZ) * scale;
+    }
+}
 
 bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
 {
@@ -115,6 +186,23 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
     return true;
 }
 
+void updateCPUTransformedVertices(const std::vector<float>& originalVertices, std::vector<float>& transformedVertices, const glm::mat4& modelView) {
+    transformedVertices.resize(originalVertices.size());
+    for (size_t i = 0; i < originalVertices.size(); i += 6) {
+        glm::vec4 p(originalVertices[i], originalVertices[i + 1], originalVertices[i + 2], 1.0f);
+        glm::vec4 transformed = modelView * p;
+
+        transformedVertices[i] = transformed.x;
+        transformedVertices[i + 1] = transformed.y;
+        transformedVertices[i + 2] = transformed.z;
+
+        // copy color unchanged
+        transformedVertices[i + 3] = originalVertices[i + 3];
+        transformedVertices[i + 4] = originalVertices[i + 4];
+        transformedVertices[i + 5] = originalVertices[i + 5];
+    }
+}
+
 int main()
 {
     // glfw: initialize and configure
@@ -146,8 +234,11 @@ int main()
     // // glew: load all OpenGL function pointers
     glewInit();
 
-
-
+    // read in vertex and fragment shader
+    std::string vertexShaderCode = readShaderFile("shaders/source.vs");
+    const char* vertexShaderSource = vertexShaderCode.c_str();
+    std::string fragmentShaderCode = readShaderFile("shaders/source.fs");
+    const char* fragmentShaderSource = fragmentShaderCode.c_str();
 
     // build and compile our shader program
     // ------------------------------------
@@ -192,14 +283,16 @@ int main()
 
     // set up vertex data (and buffer(s)) and configure vertex attributes
     // ------------------------------------------------------------------
-    std::vector<float> vertices;
+    std::vector<float> originalVertices;
 
-    if (!loadOBJ("cube.obj", vertices)) {
+    if (!loadOBJ("objs/skull.obj", originalVertices)) {
         std::cerr << "Could not load OBJ geometry." << std::endl;
         glfwTerminate();
         return -1;
     }
-    unsigned int numVertices = vertices.size() / 6;
+    centerAndNormalizeMesh(originalVertices);
+    std::vector<float> transformedVertices = originalVertices;
+    unsigned int numVertices = originalVertices.size() / 6;
 
 
     unsigned int VBO, VAO;
@@ -210,7 +303,7 @@ int main()
 
 
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, originalVertices.size() * sizeof(float), originalVertices.data(), GL_DYNAMIC_DRAW);
 
 
     // position attributes
@@ -231,10 +324,20 @@ int main()
     glBindVertexArray(0); 
 
 
+    glEnable(GL_DEPTH_TEST);
+    GLint modelViewLoc = glGetUniformLocation(shaderProgram, "uModelView");
 
+    double cpuTransformMsAccum = 0.0;
+    int cpuTransformFrameCount = 0;
+
+    double cpuUploadMsAccum = 0.0;
+    int cpuUploadFrameCount = 0;
+
+    double lastFPSTime = glfwGetTime();
+    int frameCount = 0;
 
     // uncomment this call to draw in wireframe polygons.
-    // glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
 
     // render loop
@@ -245,15 +348,51 @@ int main()
         // -----
         processInput(window);
 
+        // build Model matrix
+        glm::mat4 model(1.0f);
+        model = glm::translate(model, gTranslation);
+        model = glm::rotate(model, gRotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+        model = glm::rotate(model, gRotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+        model = glm::rotate(model, gRotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+        model = glm::scale(model, gScale);
+
+        // simple View matrix
+        glm::mat4 view(1.0f);
+        glm::mat4 modelView = view * model;
+
+        if (gUseCPUTransform) {
+            auto t1 = std::chrono::high_resolution_clock::now();
+            updateCPUTransformedVertices(originalVertices, transformedVertices, modelView);
+            auto t2 = std::chrono::high_resolution_clock::now();
+
+            glBindBuffer(GL_ARRAY_BUFFER, VBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, transformedVertices.size() * sizeof(float), transformedVertices.data());
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+            auto t3 = std::chrono::high_resolution_clock::now();
+
+            cpuTransformMsAccum += std::chrono::duration<double, std::milli>(t2 - t1).count();
+            cpuUploadMsAccum += std::chrono::duration<double, std::milli>(t3 - t2).count();
+            cpuTransformFrameCount++;
+            cpuUploadFrameCount++;
+        }
 
         // render
         // ------
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-
-        // draw our first triangle
         glUseProgram(shaderProgram);
+
+        if (gUseCPUTransform) {
+            // already transformed on CPU, so send identity
+            glm::mat4 identity(1.0f);
+            glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(identity));
+        } else {
+            // GPU transforms the original vertices
+            glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(modelView));
+        }
+
         glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
         glDrawArrays(GL_TRIANGLES, 0, numVertices);
         // glBindVertexArray(0); // unbind our VA no need to unbind it every time 
@@ -262,6 +401,31 @@ int main()
         // -------------------------------------------------------------------------------
         glfwSwapBuffers(window);
         glfwPollEvents();
+
+        frameCount++;
+
+        // fps logging
+        double currentTime = glfwGetTime();
+        double elapsed = currentTime - lastFPSTime;
+
+        if (elapsed >= 1.0) {
+            double fps = frameCount / elapsed;
+
+            if (gUseCPUTransform) {
+                std::cout << "CPU mode FPS: " << fps << std::endl;
+            } else {
+                std::cout << "GPU mode FPS: " << fps << std::endl;
+            }
+
+            frameCount = 0;
+            lastFPSTime = currentTime;
+        }
+    }
+
+    // performance logs
+    if (cpuTransformFrameCount > 0) {
+        std::cout << "Average CPU transform time per frame: " << (cpuTransformMsAccum / cpuTransformFrameCount) << " ms\n";
+        std::cout << "Average CPU->GPU upload time per frame: " << (cpuUploadMsAccum / cpuUploadFrameCount) << " ms\n";
     }
 
 
@@ -283,8 +447,47 @@ int main()
 // ---------------------------------------------------------------------------------------------------------
 void processInput(GLFWwindow *window)
 {
+    const float moveStep = 0.01f;
+    const float rotStep  = 0.02f;
+    const float scaleStep = 0.001f;
+
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
+
+    // translation
+    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)  gTranslation.x -= moveStep;
+    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) gTranslation.x += moveStep;
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)    gTranslation.y += moveStep;
+    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)  gTranslation.y -= moveStep;
+    if (glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS)     gTranslation.z += moveStep;
+    if (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS)     gTranslation.z -= moveStep;
+
+    // rotation
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) gRotation.y += rotStep;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) gRotation.y -= rotStep;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) gRotation.x += rotStep;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) gRotation.x -= rotStep;
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) gRotation.z += rotStep;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) gRotation.z -= rotStep;
+
+    // scaling
+    if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) {
+        gScale += glm::vec3(scaleStep);
+    }
+    if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) {
+        gScale -= glm::vec3(scaleStep);
+        gScale.x = std::max(gScale.x, 0.05f);
+        gScale.y = std::max(gScale.y, 0.05f);
+        gScale.z = std::max(gScale.z, 0.05f);
+    }
+
+    // toggle CPU/GPU mode
+    bool spacePressedNow = (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS);
+    if (spacePressedNow && !gSpacePressedLastFrame) {
+        gUseCPUTransform = !gUseCPUTransform;
+        std::cout << (gUseCPUTransform ? "CPU transform mode\n" : "GPU transform mode\n");
+    }
+    gSpacePressedLastFrame = spacePressedNow;
 }
 
 
