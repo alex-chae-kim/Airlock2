@@ -235,9 +235,9 @@ int main()
     glewInit();
 
     // read in vertex and fragment shader
-    std::string vertexShaderCode = readShaderFile("source.vs");
+    std::string vertexShaderCode = readShaderFile("shaders/source.vs");
     const char* vertexShaderSource = vertexShaderCode.c_str();
-    std::string fragmentShaderCode = readShaderFile("source.fs");
+    std::string fragmentShaderCode = readShaderFile("shaders/source.fs");
     const char* fragmentShaderSource = fragmentShaderCode.c_str();
 
     // build and compile our shader program
@@ -285,7 +285,7 @@ int main()
     // ------------------------------------------------------------------
     std::vector<float> originalVertices;
 
-    if (!loadOBJ("skull.obj", originalVertices)) {
+    if (!loadOBJ("objs/skull.obj", originalVertices)) {
         std::cerr << "Could not load OBJ geometry." << std::endl;
         glfwTerminate();
         return -1;
