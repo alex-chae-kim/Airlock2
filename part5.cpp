@@ -17,21 +17,29 @@ struct Vec3 {
     float x, y, z;
 };
 
+struct MeshObject {
+    std::vector<float> vertices;
+    GLuint VAO = 0;
+    GLuint VBO = 0;
+    unsigned int numVertices = 0;
+
+    glm::vec3 baseTranslation{0.0f, 0.0f, 0.0f};
+    glm::vec3 baseRotation{0.0f, 0.0f, 0.0f};
+    glm::vec3 baseScale{1.0f, 1.0f, 1.0f};
+};
+
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow *window);
-
 
 // settings
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
 
-// interaction state
-glm::vec3 gTranslation(0.0f, 0.0f, 0.0f);
-glm::vec3 gRotation(0.0f, 0.0f, 0.0f); // in radians
-glm::vec3 gScale(1.0f, 1.0f, 1.0f);
-
-bool gUseCPUTransform = false;
+// animation state
+bool gAnimateOrbit = false;
 bool gSpacePressedLastFrame = false;
+float gOrbitAngle = 0.0f;
+const float gOrbitSpeed = 0.01f;
 
 std::string readShaderFile(const std::string& filename) {
     std::ifstream shader(filename);
@@ -167,21 +175,52 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
     return true;
 }
 
-void updateCPUTransformedVertices(const std::vector<float>& originalVertices, std::vector<float>& transformedVertices, const glm::mat4& modelView) {
-    transformedVertices.resize(originalVertices.size());
-    for (size_t i = 0; i < originalVertices.size(); i += 6) {
-        glm::vec4 p(originalVertices[i], originalVertices[i + 1], originalVertices[i + 2], 1.0f);
-        glm::vec4 transformed = modelView * p;
-
-        transformedVertices[i] = transformed.x;
-        transformedVertices[i + 1] = transformed.y;
-        transformedVertices[i + 2] = transformed.z;
-
-        // copy color unchanged
-        transformedVertices[i + 3] = originalVertices[i + 3];
-        transformedVertices[i + 4] = originalVertices[i + 4];
-        transformedVertices[i + 5] = originalVertices[i + 5];
+bool setupMeshObject(MeshObject& obj, const std::string& objFile)
+{
+    if (!loadOBJ(objFile, obj.vertices)) {
+        return false;
     }
+
+    centerAndNormalizeMesh(obj.vertices);
+    obj.numVertices = static_cast<unsigned int>(obj.vertices.size() / 6);
+
+    glGenVertexArrays(1, &obj.VAO);
+    glGenBuffers(1, &obj.VBO);
+
+    glBindVertexArray(obj.VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, obj.VBO);
+    glBufferData(GL_ARRAY_BUFFER, obj.vertices.size() * sizeof(float), obj.vertices.data(), GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+
+    return true;
+}
+
+glm::mat4 buildLocalModelMatrix(const MeshObject& obj)
+{
+    glm::mat4 model(1.0f);
+    model = glm::translate(model, obj.baseTranslation);
+    model = glm::rotate(model, obj.baseRotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::rotate(model, obj.baseRotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::rotate(model, obj.baseRotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+    model = glm::scale(model, obj.baseScale);
+    return model;
+}
+
+glm::mat4 buildAxisRotationAroundLine(const glm::vec3& pointOnAxis, const glm::vec3& axisDir, float angle)
+{
+glm::mat4 M(1.0f);
+M = glm::translate(M, pointOnAxis);
+M = glm::rotate(M, angle, glm::normalize(axisDir));
+M = glm::translate(M, -pointOnAxis);
+return M;
 }
 
 int main()
@@ -217,8 +256,9 @@ int main()
 
     // read in vertex and fragment shader
     std::string vertexShaderCode = readShaderFile("shaders/source.vs");
-    const char* vertexShaderSource = vertexShaderCode.c_str();
     std::string fragmentShaderCode = readShaderFile("shaders/source.fs");
+
+    const char* vertexShaderSource = vertexShaderCode.c_str();
     const char* fragmentShaderSource = fragmentShaderCode.c_str();
 
     // build and compile our shader program
@@ -264,58 +304,25 @@ int main()
 
     // set up vertex data (and buffer(s)) and configure vertex attributes
     // ------------------------------------------------------------------
-    std::vector<float> originalVertices;
+    MeshObject obj1, obj2;
 
-    if (!loadOBJ("objs/skull.obj", originalVertices)) {
-        std::cerr << "Could not load OBJ geometry." << std::endl;
+    if (!setupMeshObject(obj1, "objs/skull.obj")) {
+        std::cerr << "Could not load first OBJ.\n";
         glfwTerminate();
         return -1;
     }
-    centerAndNormalizeMesh(originalVertices);
-    std::vector<float> transformedVertices = originalVertices;
-    unsigned int numVertices = originalVertices.size() / 6;
 
+    if (!setupMeshObject(obj2, "objs/cow.obj")) {
+        std::cerr << "Could not load second OBJ.\n";
+        glfwTerminate();
+        return -1;
+    }
 
-    unsigned int VBO, VAO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
-    glBindVertexArray(VAO);
-
-
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, originalVertices.size() * sizeof(float), originalVertices.data(), GL_DYNAMIC_DRAW);
-
-
-    // position attributes
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-
-    // color attributes
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-
-
-    // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
-    glBindBuffer(GL_ARRAY_BUFFER, 0); 
-
-
-    // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
-    // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
-    glBindVertexArray(0); 
-
+    obj1.baseTranslation = glm::vec3(-0.5f, -0.3f, 0.0f);
+    obj2.baseTranslation = glm::vec3( 0.5f, 0.4f, 0.0f);
 
     glEnable(GL_DEPTH_TEST);
     GLint modelViewLoc = glGetUniformLocation(shaderProgram, "uModelView");
-
-    double cpuTransformMsAccum = 0.0;
-    int cpuTransformFrameCount = 0;
-
-    double cpuUploadMsAccum = 0.0;
-    int cpuUploadFrameCount = 0;
-
-    double lastFPSTime = glfwGetTime();
-    int frameCount = 0;
 
     // uncomment this call to draw in wireframe polygons.
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -329,34 +336,29 @@ int main()
         // -----
         processInput(window);
 
-        // build Model matrix
-        glm::mat4 model(1.0f);
-        model = glm::translate(model, gTranslation);
-        model = glm::rotate(model, gRotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
-        model = glm::rotate(model, gRotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
-        model = glm::rotate(model, gRotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
-        model = glm::scale(model, gScale);
-
-        // simple View matrix
         glm::mat4 view(1.0f);
-        glm::mat4 modelView = view * model;
 
-        if (gUseCPUTransform) {
-            auto t1 = std::chrono::high_resolution_clock::now();
-            updateCPUTransformedVertices(originalVertices, transformedVertices, modelView);
-            auto t2 = std::chrono::high_resolution_clock::now();
+        glm::mat4 localModel1 = buildLocalModelMatrix(obj1);
+        glm::mat4 localModel2 = buildLocalModelMatrix(obj2);
 
-            glBindBuffer(GL_ARRAY_BUFFER, VBO);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, transformedVertices.size() * sizeof(float), transformedVertices.data());
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        // object centers in world space before orbit rotation
+        glm::vec3 center1 = glm::vec3(localModel1 * glm::vec4(0, 0, 0, 1));
+        glm::vec3 center2 = glm::vec3(localModel2 * glm::vec4(0, 0, 0, 1));
 
-            auto t3 = std::chrono::high_resolution_clock::now();
+        glm::vec3 axis = center2 - center1;
+        glm::vec3 midpoint = 0.5f * (center1 + center2);
 
-            cpuTransformMsAccum += std::chrono::duration<double, std::milli>(t2 - t1).count();
-            cpuUploadMsAccum += std::chrono::duration<double, std::milli>(t3 - t2).count();
-            cpuTransformFrameCount++;
-            cpuUploadFrameCount++;
+        glm::mat4 orbitTransform(1.0f);
+        if (glm::length(axis) > 1e-6f) {
+            orbitTransform = buildAxisRotationAroundLine(midpoint, axis, gOrbitAngle);
         }
+
+        glm::mat4 model1 = orbitTransform * localModel1;
+        glm::mat4 model2 = orbitTransform * localModel2;
+
+        glm::mat4 modelView1 = view * model1;
+        glm::mat4 modelView2 = view * model2;
+
 
         // render
         // ------
@@ -365,55 +367,27 @@ int main()
 
         glUseProgram(shaderProgram);
 
-        if (gUseCPUTransform) {
-            // already transformed on CPU, so send identity
-            glm::mat4 identity(1.0f);
-            glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(identity));
-        } else {
-            // GPU transforms the original vertices
-            glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(modelView));
-        }
+        // draw first obj
+        glBindVertexArray(obj1.VAO);
+        glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(modelView1));
+        glDrawArrays(GL_TRIANGLES, 0, obj1.numVertices);
 
-        glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
-        glDrawArrays(GL_TRIANGLES, 0, numVertices);
-        // glBindVertexArray(0); // unbind our VA no need to unbind it every time 
- 
-        // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
-        // -------------------------------------------------------------------------------
+        // draw second obj
+        glBindVertexArray(obj2.VAO);
+        glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(modelView2));
+        glDrawArrays(GL_TRIANGLES, 0, obj2.numVertices);
+
         glfwSwapBuffers(window);
         glfwPollEvents();
-
-        frameCount++;
-
-        // fps logging
-        double currentTime = glfwGetTime();
-        double elapsed = currentTime - lastFPSTime;
-
-        if (elapsed >= 1.0) {
-            double fps = frameCount / elapsed;
-
-            if (gUseCPUTransform) {
-                std::cout << "CPU mode FPS: " << fps << std::endl;
-            } else {
-                std::cout << "GPU mode FPS: " << fps << std::endl;
-            }
-
-            frameCount = 0;
-            lastFPSTime = currentTime;
-        }
-    }
-
-    // performance logs
-    if (cpuTransformFrameCount > 0) {
-        std::cout << "Average CPU transform time per frame: " << (cpuTransformMsAccum / cpuTransformFrameCount) << " ms\n";
-        std::cout << "Average CPU->GPU upload time per frame: " << (cpuUploadMsAccum / cpuUploadFrameCount) << " ms\n";
     }
 
 
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
+    glDeleteVertexArrays(1, &obj1.VAO);
+    glDeleteBuffers(1, &obj1.VBO);
+    glDeleteVertexArrays(1, &obj2.VAO);
+    glDeleteBuffers(1, &obj2.VBO);
     glDeleteProgram(shaderProgram);
 
 
@@ -428,47 +402,18 @@ int main()
 // ---------------------------------------------------------------------------------------------------------
 void processInput(GLFWwindow *window)
 {
-    const float moveStep = 0.01f;
-    const float rotStep  = 0.02f;
-    const float scaleStep = 0.001f;
-
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
-    // translation
-    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)  gTranslation.x -= moveStep;
-    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) gTranslation.x += moveStep;
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)    gTranslation.y += moveStep;
-    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)  gTranslation.y -= moveStep;
-    if (glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS)     gTranslation.z += moveStep;
-    if (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS)     gTranslation.z -= moveStep;
-
-    // rotation
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) gRotation.y += rotStep;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) gRotation.y -= rotStep;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) gRotation.x += rotStep;
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) gRotation.x -= rotStep;
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) gRotation.z += rotStep;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) gRotation.z -= rotStep;
-
-    // scaling
-    if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS) {
-        gScale += glm::vec3(scaleStep);
-    }
-    if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) {
-        gScale -= glm::vec3(scaleStep);
-        gScale.x = std::max(gScale.x, 0.05f);
-        gScale.y = std::max(gScale.y, 0.05f);
-        gScale.z = std::max(gScale.z, 0.05f);
-    }
-
-    // toggle CPU/GPU mode
     bool spacePressedNow = (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS);
     if (spacePressedNow && !gSpacePressedLastFrame) {
-        gUseCPUTransform = !gUseCPUTransform;
-        std::cout << (gUseCPUTransform ? "CPU transform mode\n" : "GPU transform mode\n");
+        gAnimateOrbit = !gAnimateOrbit;
     }
     gSpacePressedLastFrame = spacePressedNow;
+
+    if (gAnimateOrbit) {
+        gOrbitAngle += gOrbitSpeed;
+    }
 }
 
 
