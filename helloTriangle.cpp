@@ -32,6 +32,7 @@ glm::vec3 gScale(1.0f, 1.0f, 1.0f);
 bool gUseCPUTransform = false;
 bool gSpacePressedLastFrame = false;
 
+/*
 const char *vertexShaderSource = "#version 330 core\n"
     "layout (location = 0) in vec3 aPos;\n"
     "layout (location = 1) in vec3 aColor;\n"
@@ -49,6 +50,22 @@ const char *fragmentShaderSource = "#version 330 core\n"
     "{\n"
     "   FragColor = vec4(vertexColor.x, vertexColor.y, vertexColor.z, 1.0f);\n"
     "}\n\0";
+*/
+
+std::string readShaderFile(const std::string& filename) {
+    std::ifstream shader(filename);
+    if (!shader.is_open()) {
+        std::cout << "Failed to open shader." << std::endl;
+    }
+    std::string line;
+    std::string s;
+    while (getline(shader, line)) {
+        s.append(line);
+        s.append("\n");
+    }
+    shader.close();
+    return s;
+}
 
 void centerAndNormalizeMesh(std::vector<float>& vertices)
 {
@@ -217,8 +234,11 @@ int main()
     // // glew: load all OpenGL function pointers
     glewInit();
 
-
-
+    // read in vertex and fragment shader
+    std::string vertexShaderCode = readShaderFile("source.vs");
+    const char* vertexShaderSource = vertexShaderCode.c_str();
+    std::string fragmentShaderCode = readShaderFile("source.fs");
+    const char* fragmentShaderSource = fragmentShaderCode.c_str();
 
     // build and compile our shader program
     // ------------------------------------
