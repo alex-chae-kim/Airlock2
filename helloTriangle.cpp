@@ -306,7 +306,7 @@ int main()
 
 
     glEnable(GL_DEPTH_TEST);
-    GLint modelViewLoc = glGetUniformLocation(shaderProgram, "uModelView");
+    GLint modelViewLoc = glGetUniformLocation(shaderProgram, "uMVP");
 
     double cpuTransformMsAccum = 0.0;
     int cpuTransformFrameCount = 0;
@@ -337,13 +337,20 @@ int main()
         model = glm::rotate(model, gRotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
         model = glm::scale(model, gScale);
 
+        glm::mat4 projection = glm::perspective(
+            glm::radians(45.0f),                    // FOV
+            (float)SCR_WIDTH / (float)SCR_HEIGHT,   // aspect ratio
+            0.1f,                                   // near plane
+            100.0f                                  // far plane
+        );
+
         // simple View matrix
-        glm::mat4 view(1.0f);
-        glm::mat4 modelView = view * model;
+        glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f)); // translated so the camera doesn't get placed inside the object
+        glm::mat4 mvp = projection * view * model;
 
         if (gUseCPUTransform) {
             auto t1 = std::chrono::high_resolution_clock::now();
-            updateCPUTransformedVertices(originalVertices, transformedVertices, modelView);
+            updateCPUTransformedVertices(originalVertices, transformedVertices, mvp);
             auto t2 = std::chrono::high_resolution_clock::now();
 
             glBindBuffer(GL_ARRAY_BUFFER, VBO);
@@ -371,7 +378,7 @@ int main()
             glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(identity));
         } else {
             // GPU transforms the original vertices
-            glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(modelView));
+            glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(mvp));
         }
 
         glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
