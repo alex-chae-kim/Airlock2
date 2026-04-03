@@ -24,14 +24,15 @@ void processInput(GLFWwindow *window);
 // settings
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
+bool gUseCPUTransform = false;
+bool gSpacePressedLastFrame = false;
+bool gShowDepth = false;
+bool gToggleDepthLastFrame = false;
 
 // interaction state
 glm::vec3 gTranslation(0.0f, 0.0f, 0.0f);
 glm::vec3 gRotation(0.0f, 0.0f, 0.0f); // in radians
 glm::vec3 gScale(1.0f, 1.0f, 1.0f);
-
-bool gUseCPUTransform = false;
-bool gSpacePressedLastFrame = false;
 
 std::string readShaderFile(const std::string& filename) {
     std::ifstream shader(filename);
@@ -307,6 +308,7 @@ int main()
 
     glEnable(GL_DEPTH_TEST);
     GLint modelViewLoc = glGetUniformLocation(shaderProgram, "uMVP");
+    GLint showDepthLoc = glGetUniformLocation(shaderProgram, "uShowDepth");
 
     double cpuTransformMsAccum = 0.0;
     int cpuTransformFrameCount = 0;
@@ -318,7 +320,7 @@ int main()
     int frameCount = 0;
 
     // uncomment this call to draw in wireframe polygons.
-    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
 
     // render loop
@@ -340,8 +342,8 @@ int main()
         glm::mat4 projection = glm::perspective(
             glm::radians(45.0f),                    // FOV
             (float)SCR_WIDTH / (float)SCR_HEIGHT,   // aspect ratio
-            0.1f,                                   // near plane
-            100.0f                                  // far plane
+            2.0f,                                   // near plane
+            4.0f                                    // far plane
         );
 
         // simple View matrix
@@ -371,6 +373,9 @@ int main()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(shaderProgram);
+
+        // pass depth toggle to shader
+        glUniform1i(showDepthLoc, gShowDepth ? 1 : 0);
 
         if (gUseCPUTransform) {
             // already transformed on CPU, so send identity
@@ -437,7 +442,7 @@ void processInput(GLFWwindow *window)
 {
     const float moveStep = 0.01f;
     const float rotStep  = 0.02f;
-    const float scaleStep = 0.001f;
+    const float scaleStep = 0.01f;
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
@@ -476,6 +481,13 @@ void processInput(GLFWwindow *window)
         std::cout << (gUseCPUTransform ? "CPU transform mode\n" : "GPU transform mode\n");
     }
     gSpacePressedLastFrame = spacePressedNow;
+
+    // toggle depth mode
+    bool dPressedNow = (glfwGetKey(window, GLFW_KEY_B) == GLFW_PRESS);
+    if (dPressedNow && !gToggleDepthLastFrame) {
+        gShowDepth = !gShowDepth;
+    }
+    gToggleDepthLastFrame = dPressedNow;
 }
 
 
