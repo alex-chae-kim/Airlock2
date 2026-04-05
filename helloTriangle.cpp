@@ -33,6 +33,7 @@ bool gToggleDepthLastFrame = false;
 glm::vec3 gTranslation(0.0f, 0.0f, 0.0f);
 glm::vec3 gRotation(0.0f, 0.0f, 0.0f); // in radians
 glm::vec3 gScale(1.0f, 1.0f, 1.0f);
+glm::vec3 gLightPos(0.0f, 1.0f, 1.0f);
 
 std::string readShaderFile(const std::string& filename) {
     std::ifstream shader(filename);
@@ -58,7 +59,7 @@ void centerAndNormalizeMesh(std::vector<float>& vertices)
     float minZ = vertices[2], maxZ = vertices[2];
 
     // find bounding box
-    for (size_t i = 0; i < vertices.size(); i += 6) {
+    for (size_t i = 0; i < vertices.size(); i += 9) {
         float x = vertices[i];
         float y = vertices[i + 1];
         float z = vertices[i + 2];
@@ -84,7 +85,7 @@ void centerAndNormalizeMesh(std::vector<float>& vertices)
     // scale largest dimension to len 1.0
     float scale = 1.0f / maxDim;
 
-    for (size_t i = 0; i < vertices.size(); i += 6) {
+    for (size_t i = 0; i < vertices.size(); i += 9) {
         vertices[i] = (vertices[i] - centerX) * scale;
         vertices[i + 1] = (vertices[i + 1] - centerY) * scale;
         vertices[i + 2] = (vertices[i + 2] - centerZ) * scale;
@@ -100,6 +101,7 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
     }
 
     std::vector<Vec3> positions;
+    std::vector<Vec3> normals;
     std::string line;
 
     while (std::getline(file, line)) {
@@ -115,22 +117,31 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
             iss >> pos.x >> pos.y >> pos.z;
             positions.push_back(pos);
         }
+        else if (prefix == "vn") {
+            Vec3 n;
+            iss >> n.x >> n.y >> n.z;
+            normals.push_back(n);
+        }
         else if (prefix == "f") {
-            std::vector<int> faceIndices;
+            struct FaceIndices {int pos, norm;};
+            std::vector<FaceIndices> faceIndices;
             std::string token;
 
             while (iss >> token) {
                 std::stringstream tokenStream(token);
-                std::string indexStr;
-                std::getline(tokenStream, indexStr, '/'); // only read up to first / 
+                std::string position, texture, normal;
+                std::getline(tokenStream, position, '/');
+                std::getline(tokenStream, texture, '/');
+                std::getline(tokenStream, normal, '/');
 
-                if (indexStr.empty()) {
+                if (position.empty()) {
                     std::cerr << "Bad face token in OBJ: " << token << std::endl;
                     return false;
                 }
 
-                int objIndex = std::stoi(indexStr);
-                faceIndices.push_back(objIndex - 1); // faces use 1 based indexing
+                int objIndex = std::stoi(position);
+                int normalIndex = std::stoi(normal);
+                faceIndices.push_back({objIndex - 1, normalIndex - 1}); // faces use 1 based indexing
             }
 
             if (faceIndices.size() < 3) {
@@ -141,15 +152,16 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
             // triangulate each polygon as a fan:
             // (0,1,2), (0,2,3), (0,3,4), ...
             for (size_t i = 1; i + 1 < faceIndices.size(); i++) {
-                int tri[3] = {
+                FaceIndices tri[3] = {
                     faceIndices[0],
                     faceIndices[i],
                     faceIndices[i + 1]
                 };
                 
                 for (int k = 0; k < 3; k++) {
-                    int idx = tri[k];
-                    Vec3 p = positions[idx];
+                    FaceIndices idx = tri[k];
+                    Vec3 p = positions[idx.pos];
+                    Vec3 n = normals[idx.norm];
 
                     // position
                     vertices.push_back(p.x);
@@ -160,6 +172,11 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
                     vertices.push_back(1.0f);
                     vertices.push_back(1.0f);
                     vertices.push_back(1.0f);
+
+                    // normals
+                    vertices.push_back(n.x);
+                    vertices.push_back(n.y);
+                    vertices.push_back(n.z);
                 }
             }
         }
@@ -170,9 +187,11 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
 
 void updateCPUTransformedVertices(const std::vector<float>& originalVertices, std::vector<float>& transformedVertices, const glm::mat4& modelView) {
     transformedVertices.resize(originalVertices.size());
-    for (size_t i = 0; i < originalVertices.size(); i += 6) {
+    for (size_t i = 0; i < originalVertices.size(); i += 9) {
         glm::vec4 p(originalVertices[i], originalVertices[i + 1], originalVertices[i + 2], 1.0f);
         glm::vec4 transformed = modelView * p;
+        glm::vec4 n(originalVertices[i + 6], originalVertices[i + 7], originalVertices[i + 8], 1.0f);
+        glm::vec4 transformedNormals = modelView * n;
 
         transformedVertices[i] = transformed.x;
         transformedVertices[i + 1] = transformed.y;
@@ -182,6 +201,10 @@ void updateCPUTransformedVertices(const std::vector<float>& originalVertices, st
         transformedVertices[i + 3] = originalVertices[i + 3];
         transformedVertices[i + 4] = originalVertices[i + 4];
         transformedVertices[i + 5] = originalVertices[i + 5];
+
+        transformedVertices[i + 6] = transformedNormals.x;
+        transformedVertices[i + 7] = transformedNormals.y;
+        transformedVertices[i + 8] = transformedNormals.z;
     }
 }
 
@@ -217,10 +240,15 @@ int main()
     glewInit();
 
     // read in vertex and fragment shader
-    std::string vertexShaderCode = readShaderFile("shaders/source.vs");
+    std::string vertexShaderCode = readShaderFile("shaders/phong.vs");
     const char* vertexShaderSource = vertexShaderCode.c_str();
-    std::string fragmentShaderCode = readShaderFile("shaders/source.fs");
+    std::string fragmentShaderCode = readShaderFile("shaders/phong.fs");
     const char* fragmentShaderSource = fragmentShaderCode.c_str();
+
+    std::string vertexLightShaderCode = readShaderFile("shaders/source.vs");
+    const char* vertexLightShaderSource = vertexLightShaderCode.c_str();
+    std::string fragmentLightShaderCode = readShaderFile("shaders/source.fs");
+    const char* fragmentLightShaderSource = fragmentLightShaderCode.c_str();
 
     // build and compile our shader program
     // ------------------------------------
@@ -248,6 +276,30 @@ int main()
         glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
         std::cout << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
     }
+
+    // light vertex shader
+    unsigned int vertexLightShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexLightShader, 1, &vertexLightShaderSource, NULL);
+    glCompileShader(vertexLightShader);
+    // check for shader compile errors
+    glGetShaderiv(vertexLightShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(vertexLightShader, 512, NULL, infoLog);
+        std::cout << "ERROR::SHADER::LIGHT::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
+    // light fragment shader
+    unsigned int fragmentLightShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentLightShader, 1, &fragmentLightShaderSource, NULL);
+    glCompileShader(fragmentLightShader);
+    // check for shader compile errors
+    glGetShaderiv(fragmentLightShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(fragmentLightShader, 512, NULL, infoLog);
+        std::cout << "ERROR::SHADER::LIGHT::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+    }
+
     // link shaders
     unsigned int shaderProgram = glCreateProgram();
     glAttachShader(shaderProgram, vertexShader);
@@ -262,19 +314,41 @@ int main()
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 
+    unsigned int shaderLightProgram = glCreateProgram();
+    glAttachShader(shaderLightProgram, vertexLightShader);
+    glAttachShader(shaderLightProgram, fragmentLightShader);
+    glLinkProgram(shaderLightProgram);
+    // check for linking errors
+    glGetProgramiv(shaderLightProgram, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(shaderLightProgram, 512, NULL, infoLog);
+        std::cout << "ERROR::SHADER::LIGHT::PROGRAM::LINKING_FAILED\n" << infoLog << std::endl;
+    }
+    glDeleteShader(vertexLightShader);
+    glDeleteShader(fragmentLightShader);
+
 
     // set up vertex data (and buffer(s)) and configure vertex attributes
     // ------------------------------------------------------------------
     std::vector<float> originalVertices;
+    std::vector<float> lightVertices;
 
-    if (!loadOBJ("objs/skull.obj", originalVertices)) {
+    if (!loadOBJ("objs/galleon.obj", originalVertices)) {
+        std::cerr << "Could not load OBJ geometry." << std::endl;
+        glfwTerminate();
+        return -1;
+    }
+    if (!loadOBJ("objs/cube.obj", lightVertices)) {
         std::cerr << "Could not load OBJ geometry." << std::endl;
         glfwTerminate();
         return -1;
     }
     centerAndNormalizeMesh(originalVertices);
     std::vector<float> transformedVertices = originalVertices;
-    unsigned int numVertices = originalVertices.size() / 6;
+    // centerAndNormalizeMesh(lightVertices);
+    // std::vector<float> transformedLightVertices = lightVertices;
+    unsigned int numVertices = originalVertices.size() / 9;
+    unsigned int numLightVertices = lightVertices.size() / 9;
 
 
     unsigned int VBO, VAO;
@@ -289,12 +363,17 @@ int main()
 
 
     // position attributes
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
     // color attributes
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
+
+
+    // normal attributes
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
 
 
     // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
@@ -306,9 +385,46 @@ int main()
     glBindVertexArray(0); 
 
 
+    unsigned int VBO2, VAO2;
+    glGenVertexArrays(1, &VAO2);
+    glGenBuffers(1, &VBO2);
+    // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
+    glBindVertexArray(VAO2);
+
+
+    glBindBuffer(GL_ARRAY_BUFFER, VBO2);
+    glBufferData(GL_ARRAY_BUFFER, lightVertices.size() * sizeof(float), lightVertices.data(), GL_DYNAMIC_DRAW);
+
+
+    // position attributes
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    // color attributes
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    // normal attributes
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+
+    // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+
+    // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
+    // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
+    glBindVertexArray(0);
+
+
     glEnable(GL_DEPTH_TEST);
     GLint modelViewLoc = glGetUniformLocation(shaderProgram, "uMVP");
     GLint showDepthLoc = glGetUniformLocation(shaderProgram, "uShowDepth");
+    GLint modelLoc = glGetUniformLocation(shaderProgram, "uModel");
+    GLint lightPosLoc = glGetUniformLocation(shaderProgram, "uLightPos");
+    GLint cameraPosLoc = glGetUniformLocation(shaderProgram, "uCameraPos");
+    GLint modelViewLocLight = glGetUniformLocation(shaderLightProgram, "uMVP");
+    GLint showDepthLocLight = glGetUniformLocation(shaderLightProgram, "uShowDepth");
 
     double cpuTransformMsAccum = 0.0;
     int cpuTransformFrameCount = 0;
@@ -339,6 +455,11 @@ int main()
         model = glm::rotate(model, gRotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
         model = glm::scale(model, gScale);
 
+        // build light Model matrix
+        glm::mat4 lightModel(1.0f);
+        lightModel = glm::translate(lightModel, gLightPos);
+        lightModel = glm::scale(lightModel, glm::vec3(0.01));
+
         glm::mat4 projection = glm::perspective(
             glm::radians(45.0f),                    // FOV
             (float)SCR_WIDTH / (float)SCR_HEIGHT,   // aspect ratio
@@ -349,6 +470,7 @@ int main()
         // simple View matrix
         glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -3.0f)); // translated so the camera doesn't get placed inside the object
         glm::mat4 mvp = projection * view * model;
+        glm::mat4 lightMvp = projection * view * lightModel;
 
         if (gUseCPUTransform) {
             auto t1 = std::chrono::high_resolution_clock::now();
@@ -385,11 +507,20 @@ int main()
             // GPU transforms the original vertices
             glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(mvp));
         }
-
+        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+        glUniform3fv(lightPosLoc, 1, glm::value_ptr(gLightPos));
+        glUniform3f(cameraPosLoc, 0.0f, 0.0f, 3.0f);
         glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
         glDrawArrays(GL_TRIANGLES, 0, numVertices);
-        // glBindVertexArray(0); // unbind our VA no need to unbind it every time 
- 
+        glBindVertexArray(0); // unbind our VA no need to unbind it every time
+
+        // switch to light shader, define uniform locations, and draw
+        glUseProgram(shaderLightProgram);
+        glUniformMatrix4fv(modelViewLocLight, 1, GL_FALSE, glm::value_ptr(lightMvp));
+        glUniform1i(showDepthLocLight, gShowDepth ? 1 : 0);
+        glBindVertexArray(VAO2);
+        glDrawArrays(GL_TRIANGLES, 0, numLightVertices);
+        glBindVertexArray(0);
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
         // -------------------------------------------------------------------------------
         glfwSwapBuffers(window);
@@ -427,7 +558,9 @@ int main()
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glDeleteProgram(shaderProgram);
-
+    glDeleteVertexArrays(1, &VAO2);
+    glDeleteBuffers(1, &VBO2);
+    glDeleteProgram(shaderLightProgram);
 
     // glfw: terminate, clearing all previously allocated GLFW resources.
     // ------------------------------------------------------------------
