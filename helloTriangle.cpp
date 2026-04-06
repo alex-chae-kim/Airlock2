@@ -24,8 +24,6 @@ void processInput(GLFWwindow *window);
 // settings
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
-bool gUseCPUTransform = false;
-bool gSpacePressedLastFrame = false;
 bool gShowDepth = false;
 bool gToggleDepthLastFrame = false;
 
@@ -185,29 +183,6 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
     return true;
 }
 
-void updateCPUTransformedVertices(const std::vector<float>& originalVertices, std::vector<float>& transformedVertices, const glm::mat4& modelView) {
-    transformedVertices.resize(originalVertices.size());
-    for (size_t i = 0; i < originalVertices.size(); i += 9) {
-        glm::vec4 p(originalVertices[i], originalVertices[i + 1], originalVertices[i + 2], 1.0f);
-        glm::vec4 transformed = modelView * p;
-        glm::vec4 n(originalVertices[i + 6], originalVertices[i + 7], originalVertices[i + 8], 1.0f);
-        glm::vec4 transformedNormals = modelView * n;
-
-        transformedVertices[i] = transformed.x;
-        transformedVertices[i + 1] = transformed.y;
-        transformedVertices[i + 2] = transformed.z;
-
-        // copy color unchanged
-        transformedVertices[i + 3] = originalVertices[i + 3];
-        transformedVertices[i + 4] = originalVertices[i + 4];
-        transformedVertices[i + 5] = originalVertices[i + 5];
-
-        transformedVertices[i + 6] = transformedNormals.x;
-        transformedVertices[i + 7] = transformedNormals.y;
-        transformedVertices[i + 8] = transformedNormals.z;
-    }
-}
-
 int main()
 {
     // glfw: initialize and configure
@@ -333,7 +308,7 @@ int main()
     std::vector<float> originalVertices;
     std::vector<float> lightVertices;
 
-    if (!loadOBJ("objs/galleon.obj", originalVertices)) {
+    if (!loadOBJ("objs/skull.obj", originalVertices)) {
         std::cerr << "Could not load OBJ geometry." << std::endl;
         glfwTerminate();
         return -1;
@@ -344,7 +319,6 @@ int main()
         return -1;
     }
     centerAndNormalizeMesh(originalVertices);
-    std::vector<float> transformedVertices = originalVertices;
     // centerAndNormalizeMesh(lightVertices);
     // std::vector<float> transformedLightVertices = lightVertices;
     unsigned int numVertices = originalVertices.size() / 9;
@@ -426,12 +400,6 @@ int main()
     GLint modelViewLocLight = glGetUniformLocation(shaderLightProgram, "uMVP");
     GLint showDepthLocLight = glGetUniformLocation(shaderLightProgram, "uShowDepth");
 
-    double cpuTransformMsAccum = 0.0;
-    int cpuTransformFrameCount = 0;
-
-    double cpuUploadMsAccum = 0.0;
-    int cpuUploadFrameCount = 0;
-
     double lastFPSTime = glfwGetTime();
     int frameCount = 0;
 
@@ -472,23 +440,6 @@ int main()
         glm::mat4 mvp = projection * view * model;
         glm::mat4 lightMvp = projection * view * lightModel;
 
-        if (gUseCPUTransform) {
-            auto t1 = std::chrono::high_resolution_clock::now();
-            updateCPUTransformedVertices(originalVertices, transformedVertices, mvp);
-            auto t2 = std::chrono::high_resolution_clock::now();
-
-            glBindBuffer(GL_ARRAY_BUFFER, VBO);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, transformedVertices.size() * sizeof(float), transformedVertices.data());
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-            auto t3 = std::chrono::high_resolution_clock::now();
-
-            cpuTransformMsAccum += std::chrono::duration<double, std::milli>(t2 - t1).count();
-            cpuUploadMsAccum += std::chrono::duration<double, std::milli>(t3 - t2).count();
-            cpuTransformFrameCount++;
-            cpuUploadFrameCount++;
-        }
-
         // render
         // ------
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
@@ -499,14 +450,7 @@ int main()
         // pass depth toggle to shader
         glUniform1i(showDepthLoc, gShowDepth ? 1 : 0);
 
-        if (gUseCPUTransform) {
-            // already transformed on CPU, so send identity
-            glm::mat4 identity(1.0f);
-            glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(identity));
-        } else {
-            // GPU transforms the original vertices
-            glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(mvp));
-        }
+        glUniformMatrix4fv(modelViewLoc, 1, GL_FALSE, glm::value_ptr(mvp));
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
         glUniform3fv(lightPosLoc, 1, glm::value_ptr(gLightPos));
         glUniform3f(cameraPosLoc, 0.0f, 0.0f, 3.0f);
@@ -535,21 +479,11 @@ int main()
         if (elapsed >= 1.0) {
             double fps = frameCount / elapsed;
 
-            if (gUseCPUTransform) {
-                std::cout << "CPU mode FPS: " << fps << std::endl;
-            } else {
-                std::cout << "GPU mode FPS: " << fps << std::endl;
-            }
+            std::cout << "FPS: " << fps << std::endl;
 
             frameCount = 0;
             lastFPSTime = currentTime;
         }
-    }
-
-    // performance logs
-    if (cpuTransformFrameCount > 0) {
-        std::cout << "Average CPU transform time per frame: " << (cpuTransformMsAccum / cpuTransformFrameCount) << " ms\n";
-        std::cout << "Average CPU->GPU upload time per frame: " << (cpuUploadMsAccum / cpuUploadFrameCount) << " ms\n";
     }
 
 
@@ -606,14 +540,6 @@ void processInput(GLFWwindow *window)
         gScale.y = std::max(gScale.y, 0.05f);
         gScale.z = std::max(gScale.z, 0.05f);
     }
-
-    // toggle CPU/GPU mode
-    bool spacePressedNow = (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS);
-    if (spacePressedNow && !gSpacePressedLastFrame) {
-        gUseCPUTransform = !gUseCPUTransform;
-        std::cout << (gUseCPUTransform ? "CPU transform mode\n" : "GPU transform mode\n");
-    }
-    gSpacePressedLastFrame = spacePressedNow;
 
     // toggle depth mode
     bool dPressedNow = (glfwGetKey(window, GLFW_KEY_B) == GLFW_PRESS);
