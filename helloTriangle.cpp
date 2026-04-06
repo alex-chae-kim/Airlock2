@@ -13,8 +13,15 @@
 #include <iostream>
 #include <chrono>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 struct Vec3 {
     float x, y, z;
+};
+
+struct Vec2 {
+    float u, v;
 };
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
@@ -57,7 +64,7 @@ void centerAndNormalizeMesh(std::vector<float>& vertices)
     float minZ = vertices[2], maxZ = vertices[2];
 
     // find bounding box
-    for (size_t i = 0; i < vertices.size(); i += 9) {
+    for (size_t i = 0; i < vertices.size(); i += 11) {
         float x = vertices[i];
         float y = vertices[i + 1];
         float z = vertices[i + 2];
@@ -83,7 +90,7 @@ void centerAndNormalizeMesh(std::vector<float>& vertices)
     // scale largest dimension to len 1.0
     float scale = 1.0f / maxDim;
 
-    for (size_t i = 0; i < vertices.size(); i += 9) {
+    for (size_t i = 0; i < vertices.size(); i += 11) {
         vertices[i] = (vertices[i] - centerX) * scale;
         vertices[i + 1] = (vertices[i + 1] - centerY) * scale;
         vertices[i + 2] = (vertices[i + 2] - centerZ) * scale;
@@ -99,6 +106,7 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
     }
 
     std::vector<Vec3> positions;
+    std::vector<Vec2> texcoords;
     std::vector<Vec3> normals;
     std::string line;
 
@@ -115,13 +123,18 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
             iss >> pos.x >> pos.y >> pos.z;
             positions.push_back(pos);
         }
+        else if (prefix == "vt") {
+            Vec2 tc;
+            iss >> tc.u >> tc.v;
+            texcoords.push_back(tc);
+        }
         else if (prefix == "vn") {
             Vec3 n;
             iss >> n.x >> n.y >> n.z;
             normals.push_back(n);
         }
         else if (prefix == "f") {
-            struct FaceIndices {int pos, norm;};
+            struct FaceIndices {int pos, tex, norm;};
             std::vector<FaceIndices> faceIndices;
             std::string token;
 
@@ -138,8 +151,9 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
                 }
 
                 int objIndex = std::stoi(position);
-                int normalIndex = std::stoi(normal);
-                faceIndices.push_back({objIndex - 1, normalIndex - 1}); // faces use 1 based indexing
+                int texIndex = texture.empty() ? 0 : std::stoi(texture);
+                int normalIndex = normal.empty() ? 0 : std::stoi(normal);
+                faceIndices.push_back({objIndex - 1, texIndex - 1, normalIndex - 1});
             }
 
             if (faceIndices.size() < 3) {
@@ -161,6 +175,13 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
                     Vec3 p = positions[idx.pos];
                     Vec3 n = normals[idx.norm];
 
+                    // UV — fall back to (0,0) if no texcoords present
+                    float u = 0.0f, v = 0.0f;
+                    if (idx.tex >= 0 && idx.tex < (int)texcoords.size()) {
+                        u = texcoords[idx.tex].u;
+                        v = texcoords[idx.tex].v;
+                    }
+
                     // position
                     vertices.push_back(p.x);
                     vertices.push_back(p.y);
@@ -170,6 +191,10 @@ bool loadOBJ(const std::string& filename, std::vector<float>& vertices)
                     vertices.push_back(1.0f);
                     vertices.push_back(1.0f);
                     vertices.push_back(1.0f);
+
+                    // UV
+                    vertices.push_back(u);
+                    vertices.push_back(v);
 
                     // normals
                     vertices.push_back(n.x);
@@ -321,8 +346,8 @@ int main()
     centerAndNormalizeMesh(originalVertices);
     // centerAndNormalizeMesh(lightVertices);
     // std::vector<float> transformedLightVertices = lightVertices;
-    unsigned int numVertices = originalVertices.size() / 9;
-    unsigned int numLightVertices = lightVertices.size() / 9;
+    unsigned int numVertices = originalVertices.size() / 11;
+    unsigned int numLightVertices = lightVertices.size() / 11;
 
 
     unsigned int VBO, VAO;
@@ -337,17 +362,20 @@ int main()
 
 
     // position attributes
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
     // color attributes
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
-
     // normal attributes
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(6 * sizeof(float)));
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)(8 * sizeof(float)));
     glEnableVertexAttribArray(2);
+
+    // UV attributes
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(3);
 
 
     // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
@@ -371,16 +399,20 @@ int main()
 
 
     // position attributes
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
     // color attributes
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
     // normal attributes
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(6 * sizeof(float)));
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)(8 * sizeof(float)));
     glEnableVertexAttribArray(2);
+
+    // UV attributes
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(3);
 
     // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -391,12 +423,51 @@ int main()
     glBindVertexArray(0);
 
 
+    // Texture setup
+    unsigned int handleTex;
+    glGenTextures(1, &handleTex);
+    glBindTexture(GL_TEXTURE_2D, handleTex);
+
+    // Wrapping & filtering
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    // Try loading from disk first; fall back to a procedural white texture
+    stbi_set_flip_vertically_on_load(true);
+    int texW, texH, texChannels;
+    unsigned char* texData = stbi_load("textures/skull.png", &texW, &texH, &texChannels, 0);
+    if (texData) {
+        GLenum fmt = (texChannels == 4) ? GL_RGBA : GL_RGB;
+        glTexImage2D(GL_TEXTURE_2D, 0, fmt, texW, texH, 0, fmt, GL_UNSIGNED_BYTE, texData);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        stbi_image_free(texData);
+        std::cout << "Loaded texture: textures/skull.png (" << texW << "x" << texH << ")" << std::endl;
+    } else {
+        // Procedural white texture
+        const int CB = 8;
+        unsigned char checker[CB * CB * 3];
+        for (int row = 0; row < CB; ++row) {
+            for (int col = 0; col < CB; ++col) {
+                int idx = (row * CB + col) * 3;
+                checker[idx] = 255; checker[idx+1] = 255; checker[idx+2] = 255;
+            }
+        }
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, CB, CB, 0, GL_RGB, GL_UNSIGNED_BYTE, checker);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        std::cout << "No texture file found — using procedural checkerboard." << std::endl;
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    // -----------------------------------------------------------------------
+
     glEnable(GL_DEPTH_TEST);
     GLint modelViewLoc = glGetUniformLocation(shaderProgram, "uMVP");
     GLint showDepthLoc = glGetUniformLocation(shaderProgram, "uShowDepth");
     GLint modelLoc = glGetUniformLocation(shaderProgram, "uModel");
     GLint lightPosLoc = glGetUniformLocation(shaderProgram, "uLightPos");
     GLint cameraPosLoc = glGetUniformLocation(shaderProgram, "uCameraPos");
+    GLint texLoc = glGetUniformLocation(shaderProgram, "uTex");
     GLint modelViewLocLight = glGetUniformLocation(shaderLightProgram, "uMVP");
     GLint showDepthLocLight = glGetUniformLocation(shaderLightProgram, "uShowDepth");
 
@@ -454,6 +525,11 @@ int main()
         glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
         glUniform3fv(lightPosLoc, 1, glm::value_ptr(gLightPos));
         glUniform3f(cameraPosLoc, 0.0f, 0.0f, 3.0f);
+
+        // bind texture to unit 0 and point sampler at it
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, handleTex);
+        glUniform1i(texLoc, 0);
         glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
         glDrawArrays(GL_TRIANGLES, 0, numVertices);
         glBindVertexArray(0); // unbind our VA no need to unbind it every time
@@ -495,6 +571,7 @@ int main()
     glDeleteVertexArrays(1, &VAO2);
     glDeleteBuffers(1, &VBO2);
     glDeleteProgram(shaderLightProgram);
+    glDeleteTextures(1, &handleTex);
 
     // glfw: terminate, clearing all previously allocated GLFW resources.
     // ------------------------------------------------------------------
